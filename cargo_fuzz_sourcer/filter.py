@@ -13,6 +13,7 @@ LEAK = re.compile(r"\s+#(?P<num>\d+) .* \((?P<spec>.*)\)")
 
 # Objdump can prefix the source code from debug info with the custom string
 SOURCE_PREFIX = "ABCDcfs"
+SOURCE_PREFIX_LEN = len(SOURCE_PREFIX)
 
 # Base for the objdump command
 CMD_BASE = f"objdump -S --source-comment={SOURCE_PREFIX} -C -l -d --no-show-raw-insn -M intel".split(
@@ -41,7 +42,7 @@ def process_line(line: str) -> None:
 def process_leak(num: str, spec: str) -> None:
     """Process a single leak."""
 
-    if int(num) > 5:
+    if int(num) > 7:
         return
 
     file_path, offset_str = spec.rsplit("+", maxsplit=1)
@@ -68,12 +69,45 @@ def print_objdump_result(output: str) -> None:
 
 
 def extract_source_code(output: str) -> str:
-    source: typing.List[str] = []
-    for line in output.splitlines():
-        if line.startswith(SOURCE_PREFIX):
-            source.append(line[len(SOURCE_PREFIX) :])
+    """Extract the code snippet from the objdump output."""
+    res: str = ""
+    lines_to_include = 3
+    lines = list(output.splitlines())
 
-    return "\n".join(source)
+    # Find the first line that starts with the chosen prefix
+    for idx, line in enumerate(lines):
+        if line.startswith(SOURCE_PREFIX):
+            break
+    else:
+        # If we don't find any source code, return empty string
+        return ""
+
+    # Normalize the index
+    idx -= 1
+
+    # Line at idx should contain the file path and file number
+    file_path = lines[idx]
+    if "rustlib" in file_path:
+        return ""
+
+    # Add it as a comment first
+    res += f"// {lines[idx]}\n"
+
+    # Collect the first code snippet in the output, ingore any other code
+    source_code = []
+    for i, line in enumerate(lines[idx + 1 :]):
+        if not line.startswith(SOURCE_PREFIX):
+            break
+        source_code.append(line[SOURCE_PREFIX_LEN:])
+    else:
+        return ""
+
+    # Join the last `lines_to_include` source code lines
+    # It looks like the last line in this list is the "leaking" line of code
+    # This way we can add a litle bit more context to the output
+    res += "\n".join(source_code[-lines_to_include:])
+
+    return res
 
 
 def construct_objdump_cmd(file_path: str, offset_str: str) -> typing.List[str]:
@@ -81,8 +115,8 @@ def construct_objdump_cmd(file_path: str, offset_str: str) -> typing.List[str]:
 
     # Calculate the start and end offset
     # For some reason the offset is one off
-    start_addr = int(offset_str, base=16) - 8
-    stop_addr = start_addr + 1
+    start_addr = int(offset_str, base=16) - 0x10
+    stop_addr = start_addr + 0x14
 
     cmd = CMD_BASE + [
         f"--start-address={hex(start_addr)}",
